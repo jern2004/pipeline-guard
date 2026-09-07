@@ -8,7 +8,7 @@ A secure CI/CD pipeline on Azure with infrastructure drift detection and scoped 
 
 PipelineGuard is a small incident-tracker API that gets built, security-scanned, and deployed to Azure automatically on every code push. Around it sits the part that makes the project interesting: a scheduled watchdog that compares the live Azure infrastructure against its Terraform definition, raises an alert when someone changes infrastructure manually (this is called **configuration drift**), and automatically reverts one specific class of dangerous change (an opened network port), logging the event as an incident inside the app itself.
 
-The app is deliberately boring. The pipeline, the infrastructure code, and the drift tooling are the point.
+The app is deliberately boring/plain. The pipeline, the infrastructure code, and the drift tooling are the point.
 
 ---
 
