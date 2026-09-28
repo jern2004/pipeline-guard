@@ -1,7 +1,7 @@
-import os 
+import os
 
-from sqlalchemy import create_engine 
-from sqlalchemy.orm import DeclarativeBase, sessionmaker 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 """
 # define where the databases lives 
@@ -16,7 +16,7 @@ Postgres has no such option and would reject it, so only pass it for SQLite
 """
 
 if DATABASE_URL.startswith("sqlite"):
-    connect_args = {"check_the_thread": False}
+    connect_args = {"check_same_thread": False}
 else:
     connect_args = {}
 
