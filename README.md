@@ -121,7 +121,6 @@ pipeline-guard/
   .github/
     workflows/
       ci-cd.yml               # lint, test, build, Trivy gate, smoke test
-      drift.yml               # scheduled drift watchdog (placeholder: designed, not built)
   docs/
     architecture.md           # placeholder
 ```
