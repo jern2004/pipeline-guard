@@ -72,5 +72,11 @@ jobs:
       - name: Smoke test (container starts and /health returns 200)
         run: |
           docker run -d --name smoke -p 8080:8080 "$IMAGE"
-          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 2 \
-            http://localhost:8080/health || { docker logs smoke; exit 1; }
+          # docker run returns when the container starts, not when the app is ready. Until the
+          # app listens, Docker's port proxy resets connections, so retry on any error (up to ~30s).
+          if ! curl --fail --silent --show-error --retry 15 --retry-delay 2 --retry-all-errors \
+              http://localhost:8080/health; then
+            docker ps -a --filter name=smoke
+            docker logs smoke
+            exit 1
+          fi
