@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: the workflow's GITHUB_TOKEN can only read the repository.
+permissions:
+  contents: read
+
+# Every action is pinned to a full commit SHA, not a tag. Tags can be moved to point at
+# different code; a SHA cannot. (In March 2026 attackers re-pointed trivy-action tags to
+# malicious code: advisory GHSA-69fq-xp46-6x23.) The comment shows the matching release.
+
+jobs:
+  lint-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.10"
+
+      - name: Install dependencies from the lockfile
+        run: uv sync --locked
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Test (pytest)
+        run: uv run pytest
+
+  build-scan:
+    name: Build, scan, and smoke test image
+    needs: lint-test # quality gate: this job only runs if lint and tests passed
+    runs-on: ubuntu-latest
+    env:
+      # Tagged with the exact commit it was built from. Never "latest".
+      IMAGE: pipelineguard:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build image
+        run: docker build -t "$IMAGE" app
+
+      - name: Trivy scan (fail on HIGH or CRITICAL vulnerabilities)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Smoke test (container starts and /health returns 200)
+        run: |
+          docker run -d --name smoke -p 8080:8080 "$IMAGE"
+          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 2 \
+            http://localhost:8080/health || { docker logs smoke; exit 1; }

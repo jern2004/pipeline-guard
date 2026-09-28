@@ -1,0 +1,8 @@
+# Keep the build context small and keep local artifacts out of the image build.
+.venv
+**/__pycache__
+**/*.pyc
+*.db
+.pytest_cache
+.ruff_cache
+tests
