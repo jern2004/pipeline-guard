@@ -2,6 +2,31 @@
 
 A secure CI/CD pipeline on Azure with infrastructure drift detection and scoped auto-remediation. This document explains what the system does, how every component works, and the order to build it in. Plain-language explanations come first, technical terms are named as they appear, and everything is defined in the glossary at the end.
 
+## Project status
+
+Work in progress, built in phases (see [15. Build order](#15-build-order)). The rest of this document describes the target design; this table is the source of truth for what exists today.
+
+| Component | Status |
+|---|---|
+| FastAPI incident API: 4 endpoints, SQLAlchemy + Pydantic, SQLite locally | Built |
+| pytest suite and ruff lint | Built |
+| Dockerfile: Python slim, multi-stage uv build, non-root user | Built |
+| GitHub Actions CI: lint, test, image build tagged with the commit SHA, Trivy gate on HIGH/CRITICAL, container smoke test | Built |
+| Terraform for Azure (ACR, App Service, PostgreSQL, VNet + NSG, Key Vault) with remote state | Designed, not built |
+| Deployment: push to ACR, dev -> staging -> manual approval -> prod | Designed, not built |
+| OIDC federation (GitHub -> Azure) and Key Vault references | Designed, not built |
+| Drift watchdog and scoped NSG auto-remediation | Designed, not built |
+
+Run it locally (needs [uv](https://docs.astral.sh/uv/)):
+
+```
+cd app
+uv run uvicorn app.main:app --reload --port 8080
+uv run pytest
+```
+
+The interactive API docs are then at http://127.0.0.1:8080/docs.
+
 ---
 
 ## 1. What it is
@@ -57,12 +82,12 @@ Three planes, kept mentally separate:
 
 | Layer | Tool | Why this one |
 |---|---|---|
-| Application | FastAPI + PostgreSQL | You already know FastAPI, zero learning curve |
-| Container | Docker | Industry default, non-negotiable skill |
+| Application | FastAPI + PostgreSQL | Small and fast to build, with auto-generated OpenAPI docs at `/docs` |
+| Container | Docker | Industry-standard packaging and runtime |
 | Registry | Azure Container Registry (ACR) | Where built images live |
 | Compute | Azure App Service for Containers | Cheap, simple, free-tier friendly. AKS is a later upgrade, not the starting point |
-| Infrastructure as Code | Terraform | The dominant IaC tool in job postings |
-| CI/CD | GitHub Actions | Free for public repos, visible to anyone reviewing your GitHub |
+| Infrastructure as Code | Terraform | Declarative, widely used, and `terraform plan` doubles as a drift detector |
+| CI/CD | GitHub Actions | Built into GitHub, free for public repos |
 | Image scanning | Trivy | Free, one-line pipeline integration, real CVE detection |
 | Secrets | Azure Key Vault + managed identity | No credentials in code or in GitHub, ever |
 | Pipeline auth | OIDC federated credentials | Short-lived tokens instead of stored passwords |
@@ -73,27 +98,32 @@ Three planes, kept mentally separate:
 ## 4. Repository layout
 
 ```
-pipelineguard/
-  app/
-    main.py            # FastAPI routes
-    models.py          # DB models
-    Dockerfile
-    requirements.txt
-  infra/
-    main.tf            # all Azure resources
+pipeline-guard/
+  app/                        # FastAPI service (uv project, src layout)
+    pyproject.toml            # dependencies; exact versions pinned in uv.lock
+    uv.lock
+    Dockerfile                # multi-stage build, non-root runtime user
+    src/app/
+      main.py                 # FastAPI app and routes
+      models.py               # SQLAlchemy Incident model
+      schemas.py              # Pydantic request/response schemas
+      database.py             # engine, session factory, get_db dependency
+    tests/                    # pytest suite
+  infra/                      # Terraform (placeholder files: designed, not built)
+    main.tf                   # all Azure resources
     variables.tf
     outputs.tf
-    backend.tf         # remote state config (Azure Storage)
+    backend.tf                # remote state config (Azure Storage)
     envs/
-      dev.tfvars
-      staging.tfvars
-      prod.tfvars
+      dev.tfvars.example      # per-environment values; real .tfvars files are gitignored
+      staging.tfvars.example
+      prod.tfvars.example
   .github/
     workflows/
-      ci-cd.yml        # build, scan, deploy pipeline
-      drift.yml        # scheduled drift watchdog
+      ci-cd.yml               # lint, test, build, Trivy gate, smoke test
+      drift.yml               # scheduled drift watchdog (placeholder: designed, not built)
   docs/
-    architecture.md    # this document
+    architecture.md           # placeholder
 ```
 
 ---
@@ -115,13 +145,11 @@ The `/health` endpoint matters more than it looks: after every deployment, the p
 
 The app is also the destination for the watchdog's remediation logs (section 11), which makes the whole system self-referential in a satisfying way: the security tooling files its own incidents into the app it protects.
 
-Budget one to two days on this layer, no more.
-
 ---
 
 ## 6. Containerization
 
-A single Dockerfile: Python slim base image, dependencies installed, app copied in, and the process runs as a **non-root user** (a small line that signals real security awareness to anyone reading the file).
+A multi-stage Dockerfile: a build stage installs the locked dependencies with uv, and only the resulting virtual environment is copied into a clean Python slim runtime image. The process runs as a **non-root user**, so a compromised app process does not have root privileges inside the container.
 
 Every image is tagged with the git commit SHA rather than `latest`. This gives you **immutable tags**: any running container can be traced back to the exact commit that produced it, and rollbacks are just "deploy the previous SHA."
 
@@ -149,7 +177,7 @@ One workflow file (`ci-cd.yml`), triggered on push to main. Stages run in order 
 
 1. **Lint and test.** `ruff` for linting, `pytest` for unit tests. Fail fast on broken code.
 2. **Build.** `docker build`, tagged with the commit SHA.
-3. **Scan.** Trivy scans the built image for known vulnerabilities (**CVEs**). The pipeline runs it with `--exit-code 1 --severity HIGH,CRITICAL`, meaning any high or critical finding fails the build. This is the DevSecOps gate, and it is the stage that connects the project to your cybersecurity degree. Catching vulnerabilities at build time rather than in production is what "**shift-left security**" means.
+3. **Scan.** Trivy scans the built image for known vulnerabilities (**CVEs**). The pipeline runs it with `--exit-code 1 --severity HIGH,CRITICAL`, meaning any high or critical finding fails the build. This is the DevSecOps gate. Catching vulnerabilities at build time rather than in production is what "**shift-left security**" means.
 4. **Push.** The scanned image goes to ACR.
 5. **Deploy to dev.** Terraform applies the dev workspace, App Service picks up the new image, then the smoke test hits `/health`.
 6. **Deploy to staging.** Automatic, only if dev passed.
@@ -164,8 +192,6 @@ There are zero passwords stored anywhere in this project. Two mechanisms make th
 **Pipeline to Azure: OIDC federated credentials.** Instead of storing an Azure service principal secret in GitHub, GitHub Actions proves its identity to Azure with a short-lived OIDC token minted per run. Azure is configured to trust tokens from this specific repo and branch. Nothing long-lived exists to leak.
 
 **App to database: Key Vault + managed identity.** The database connection string lives in Azure Key Vault. The App Service has a managed identity with permission to read that one secret, and the app setting uses a **Key Vault reference** (`@Microsoft.KeyVault(SecretUri=...)`) so the value never appears in Terraform code, pipeline logs, or the portal config screen.
-
-If an interviewer asks "how do you handle secrets," this section is your answer, and it is a better answer than most working engineers give.
 
 ---
 
@@ -189,7 +215,7 @@ The `-detailed-exitcode` flag makes the exit code meaningful: **0** means live i
 
 ## 11. Auto-remediation (deliberately scoped)
 
-The policy decision that makes this section interview-worthy: the watchdog does **not** blindly `terraform apply` everything back on any drift. Blanket auto-revert can destroy a legitimate emergency change someone made at 2am for a reason. Uncontrolled automation has a large **blast radius**; good automation constrains it.
+The key policy decision: the watchdog does **not** blindly `terraform apply` everything back on any drift. Blanket auto-revert can destroy a legitimate emergency change someone made at 2am for a reason. Uncontrolled automation has a large **blast radius**; good automation constrains it.
 
 Instead, remediation runs from an **allow-list** with exactly one entry: NSG rules on the database subnet. If the drift diff shows that subnet's NSG changed (the classic case: someone added an inbound allow rule from `0.0.0.0/0` in the portal), the workflow runs a targeted revert:
 
@@ -199,9 +225,9 @@ terraform apply -target=azurerm_network_security_rule.db_inbound -auto-approve
 
 restoring the declared rule set, then logs a high-severity incident with the before and after state. Everything outside the allow-list stays alert-only for a human to review.
 
-(`-target` is normally discouraged in day-to-day Terraform use because it applies partial state. Using it here is a deliberate, surgical choice, and saying exactly that sentence in an interview shows you understand the tool rather than just using it.)
+(`-target` is normally discouraged in day-to-day Terraform use because it applies partial state. Using it here is a deliberate, surgical choice with a small, known blast radius.)
 
-**The demo script:** open the Azure portal, add an inbound allow-all rule to the database NSG by hand, trigger the watchdog manually, and screenshot the sequence: drift alert raised, rule reverted, incident logged in the app. That screenshot set is the centerpiece of the project's README.
+**The demo script:** open the Azure portal, add an inbound allow-all rule to the database NSG by hand, trigger the watchdog manually, and screenshot the sequence: drift alert raised, rule reverted, incident logged in the app. Those screenshots will be added to this README when this phase is built.
 
 ---
 
@@ -276,14 +302,3 @@ Build in phases and keep each phase working before starting the next. A finished
 ## 16. Cost control
 
 Use the smallest SKUs everywhere: B1 App Service plan, B1ms burstable Postgres. Run `terraform destroy` on the dev environment whenever you are not actively working (that is IaC's superpower: rebuilding it is one command). With Azure free credit and disciplined teardown, this project costs close to nothing.
-
----
-
-## 17. What this project lets you say in interviews
-
-- "Every image is scanned for CVEs in the pipeline, and high-severity findings fail the build before anything ships."
-- "There are no stored credentials anywhere: the pipeline authenticates with OIDC, the app pulls secrets from Key Vault via managed identity."
-- "I built scheduled drift detection with Terraform, and scoped auto-remediation to a security allow-list because unbounded auto-revert has too large a blast radius."
-- "Here are the screenshots of it catching and reverting an open firewall rule I introduced by hand."
-
-Each of those is one sentence, concrete, and rare in a graduate portfolio.
