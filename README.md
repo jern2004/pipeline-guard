@@ -11,7 +11,7 @@ Work in progress, built in phases (see [15. Build order](#15-build-order)). The 
 | FastAPI incident API: 4 endpoints, SQLAlchemy + Pydantic, SQLite locally | Built |
 | pytest suite and ruff lint | Built |
 | Dockerfile: Python slim, multi-stage uv build, non-root user | Built |
-| GitHub Actions CI: lint, test, image build tagged with the commit SHA, Trivy gate on HIGH/CRITICAL, container smoke test | Built |
+| GitHub Actions CI: lint, test, image build tagged with the commit SHA, Trivy gate on fixable HIGH/CRITICAL (full report logged), container smoke test | Built |
 | Terraform for Azure (ACR, App Service, PostgreSQL, VNet + NSG, Key Vault) with remote state | Designed, not built |
 | Deployment: push to ACR, dev -> staging -> manual approval -> prod | Designed, not built |
 | OIDC federation (GitHub -> Azure) and Key Vault references | Designed, not built |
@@ -176,7 +176,7 @@ One workflow file (`ci-cd.yml`), triggered on push to main. Stages run in order 
 
 1. **Lint and test.** `ruff` for linting, `pytest` for unit tests. Fail fast on broken code.
 2. **Build.** `docker build`, tagged with the commit SHA.
-3. **Scan.** Trivy scans the built image for known vulnerabilities (**CVEs**). The pipeline runs it with `--exit-code 1 --severity HIGH,CRITICAL`, meaning any high or critical finding fails the build. This is the DevSecOps gate. Catching vulnerabilities at build time rather than in production is what "**shift-left security**" means.
+3. **Scan.** Trivy scans the built image for known vulnerabilities (**CVEs**). It runs twice: a report step lists every high and critical finding, then the gate runs with `--exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed`, meaning any high or critical finding that has a fix available fails the build. Findings with no fix released yet cannot be resolved by upgrading, so they are reported but do not block; the next build picks up the fix once it exists, and the gate then enforces it. This is the DevSecOps gate. Catching vulnerabilities at build time rather than in production is what "**shift-left security**" means.
 4. **Push.** The scanned image goes to ACR.
 5. **Deploy to dev.** Terraform applies the dev workspace, App Service picks up the new image, then the smoke test hits `/health`.
 6. **Deploy to staging.** Automatic, only if dev passed.
@@ -242,7 +242,7 @@ App Service streams logs to Azure Monitor. Optionally, Application Insights adds
 
 1. You push a commit to main.
 2. Lint and tests run, then the image builds tagged with the commit SHA.
-3. Trivy scans the image; a high/critical CVE kills the run here.
+3. Trivy scans the image; a high/critical CVE with an available fix kills the run here.
 4. Image pushes to ACR, dev deploys, smoke test passes.
 5. Staging deploys automatically.
 6. Prod waits for your manual approval, then deploys.
