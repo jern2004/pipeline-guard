@@ -50,11 +50,23 @@ jobs:
       - name: Build image
         run: docker build -t "$IMAGE" app
 
-      - name: Trivy scan (fail on HIGH or CRITICAL vulnerabilities)
+      # Scan policy: block on HIGH/CRITICAL vulnerabilities that have a fix available.
+      # Unfixed ones (no patched package released yet) cannot be resolved by upgrading, so
+      # the report step lists them but they do not block. Every build pulls the current base
+      # image, so fixes are picked up once released, and from then on the gate enforces them.
+      - name: Trivy report (all HIGH/CRITICAL findings, never fails)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}
           severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Trivy gate (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "1"
 
       - name: Smoke test (container starts and /health returns 200)

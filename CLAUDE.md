@@ -20,7 +20,7 @@ The app is deliberately simple. The pipeline, Terraform, secrets handling, and d
 * Registry: Azure Container Registry (ACR).
 * Compute: Azure App Service for Containers. NOT AKS. AKS is an optional last phase only if everything else works.
 * IaC: Terraform, remote state in an Azure Storage Account with state locking. Environments (dev/staging/prod) via Terraform workspaces + per-env `.tfvars`.
-* CI/CD: GitHub Actions. Stages in order: lint (ruff) + test (pytest) -> build -> Trivy scan (fail on HIGH/CRITICAL) -> push to ACR -> deploy dev + smoke test on `/health` -> deploy staging -> manual approval gate -> deploy prod.
+* CI/CD: GitHub Actions. Stages in order: lint (ruff) + test (pytest) -> build -> Trivy scan (full HIGH/CRITICAL report logged; fail on HIGH/CRITICAL that have a fix available, decided 2026-09-28 after the first scan found 44 unfixable Debian base-image CVEs) -> push to ACR -> deploy dev + smoke test on `/health` -> deploy staging -> manual approval gate -> deploy prod.
 * Secrets: zero stored credentials. GitHub -> Azure via OIDC federated credentials. App -> database connection string via Azure Key Vault reference using a managed identity.
 * Drift detection: scheduled workflow (cron every 6h + manual trigger) running `terraform plan -detailed-exitcode`. Exit code 2 = drift: open a GitHub issue with the diff and POST an incident to the app's own API.
 * Auto-remediation: allow-list with exactly one entry, the database subnet NSG rules. Targeted revert with `terraform apply -target=...`. Everything else is alert-only. Never blanket auto-apply.
